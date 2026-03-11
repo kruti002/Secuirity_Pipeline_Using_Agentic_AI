@@ -55,11 +55,15 @@ env/
 
 # Data
 data_windows/
+*.parquet
 
 # auth
 auth.txt
-auth_full_parquet
-auth_full_csv
-filtered_auth_parquet
-labeled_auth_parquet
-auth_time_window
+auth_full.parquet
+auth_subset.parquet
+auth_time_window.parquet
+
+auth_full.csv
+filtered_auth.parquet
+labeled_auth.parquet
+auth_time_window/
