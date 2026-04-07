@@ -5,12 +5,12 @@ import json
 import os
 import sys
 
+# Ensure local directory imports work
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from features import add_base_features, drop_unneeded_columns_for_ml
-from rule_engine import apply_rules
-from risk_aggregator import aggregate_risk
-from graph_anomaly_model import get_graph_feature_cols
+from rules import apply_rule_engine
+from graph_anomaly_model import normalize_score
 
 def run_pipeline(eval_path='data/splits/test.csv'):
     print(f"Loading unseen test data from {eval_path}...")
@@ -20,47 +20,65 @@ def run_pipeline(eval_path='data/splits/test.csv'):
 
     df_raw = pd.read_csv(eval_path)
     
-    print("Preprocessing for supervised model...")
-    df_proc = add_base_features(df_raw)
-    df_proc = drop_unneeded_columns_for_ml(df_proc)
+    # 1. LOAD BUNDLES
+    print("Loading Layer Bundles (Supervised + Graph)...")
+    sup_bundle = joblib.load('models/supervised_model_bundle.joblib')
+    graph_bundle = joblib.load('models/graph_anomaly_bundle.joblib')
     
-    # Run supervised model
-    print("Running Supervised Model...")
-    bundle   = joblib.load('models/supervised_model_bundle.joblib')
-    rf_model  = bundle['model']
-    threshold = bundle.get('threshold', 0.30)
-    X_sup = df_proc.drop(['Is Account Takeover'], axis=1) if 'Is Account Takeover' in df_proc.columns else df_proc
-    model_scores = rf_model.predict_proba(X_sup)[:, 1]
+    # 2. BEHAVIORAL LAYER (Supervised)
+    print("Executing Behavioral Layer (RF)...")
+    df_proc = add_base_features(df_raw.copy())
+    # Dynamic feature selection based on what the model was trained with
+    X_sup = df_proc[sup_bundle['numerical_cols'] + sup_bundle['categorical_cols']].fillna(0)
+    model_scores = sup_bundle['model'].predict_proba(X_sup)[:, 1]
     
-    # Run Graph Anomaly Engine (Isolation Forest)
-    print("Running Graph Anomaly Engine...")
-    graph_cols = joblib.load('models/graph_cols.joblib')
-    graph_scaler = joblib.load('models/graph_scaler.joblib')
-    graph_iso_model = joblib.load('models/graph_anomaly_model.joblib')
-    low_bound, high_bound = joblib.load('models/graph_calibration.joblib')
+    # 3. GRAPH ANOMALY LAYER (Isolation Forest)
+    print("Executing Graph Anomaly Layer (IF)...")
+    X_graph = graph_bundle['scaler'].transform(df_raw[graph_bundle['graph_cols']].fillna(0))
+    raw_graph_scores = graph_bundle['model'].decision_function(X_graph)
+    # Normalize using the fixed calibration bounds [0, 1]
+    graph_anomaly_score = normalize_score(
+        raw_graph_scores, 
+        graph_bundle['low_bound'], 
+        graph_bundle['high_bound']
+    )
     
-    # We execute utilizing the structural nodes already computed chronologically during split_data
-    df_graph = df_raw.copy()
-    
-    # Isolate exact node feature dependencies
-    X_graph = df_graph[graph_cols].fillna(0)
-    X_scaled = graph_scaler.transform(X_graph)
-    
-    # Convert arbitrary Isolation Forest returns (-1 anomaly, 1 normal) into probability-like score (0 to 1 risk)
-    # Calibrate using exact validation boundaries instead of volatile chunk minimums
-    decision_scores = graph_iso_model.decision_function(X_scaled)
-    graph_anomaly_score = 1 - np.clip((decision_scores - low_bound) / (high_bound - low_bound), 0, 1)
-    
-    # Run rule engine
-    print("Running Rule Engine...")
-    df_rules = apply_rules(df_raw.copy())
+    # 4. RULE ENGINE LAYER
+    print("Executing SOC Rule Engine...")
+    df_rules = apply_rule_engine(df_raw)
     rule_scores = df_rules['rule_score'].values
-    reason_codes = df_rules['reason_codes'].values
+    reason_codes = df_rules['rule_reasons'].values
     
-    # Sub-aggregate and export pipeline
-    print("Aggregating Hybrid Risk Layers...")
-    df_final, user_risk = aggregate_risk(df_raw.copy(), model_scores, graph_anomaly_score, rule_scores)
+    # 5. RISK AGGREGATION & FUSION
+    print("Aggregating Hybrid Risk Score...")
+    # Standardised Hybrid Fusion: 50% ML, 30% Graph, 20% Rules
+    final_risk = (0.5 * model_scores) + (0.3 * graph_anomaly_score) + (0.2 * rule_scores)
+    # Max override for critical rules
+    final_risk = np.maximum(final_risk, rule_scores * 0.8)
+    
+    # Create final result set
+    df_final = df_raw.copy()
+    df_final['model_score'] = model_scores
+    df_final['graph_anomaly_score'] = graph_anomaly_score
+    df_final['rule_score'] = rule_scores
+    df_final['final_risk'] = final_risk
     df_final['reason_codes'] = reason_codes
+    
+    def assign_severity(score):
+        if score >= 0.85: return 'CRITICAL'
+        if score >= 0.65: return 'HIGH'
+        if score >= 0.40: return 'MEDIUM'
+        return 'LOW'
+    
+    df_final['alert_severity'] = df_final['final_risk'].apply(assign_severity)
+    
+    # User-level risks for the dashboard
+    user_risk = df_final.groupby('User ID').agg({
+        'final_risk': ['max', 'mean', 'count'],
+        'model_score': 'max',
+        'graph_anomaly_score': 'max'
+    }).reset_index()
+    user_risk.columns = ['User ID', 'max_risk', 'avg_risk', 'alert_count', 'max_model_score', 'max_graph_score']
     
     alerts = df_final[df_final['final_risk'] >= 0.4].sort_values(by='final_risk', ascending=False)
     
@@ -84,7 +102,7 @@ def run_pipeline(eval_path='data/splits/test.csv'):
     with open('dashboard/public/user_risks.json', 'w') as f:
         json.dump(user_risk_out, f)
         
-    print("Unified Hybrid Pipeline complete. Evaluation on test set exported.")
+    print("Unified Hybrid Pipeline complete. Data exported to dashboard/public/")
     
 if __name__ == "__main__":
     run_pipeline()
