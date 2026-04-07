@@ -1,69 +1,59 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
+# --- GLOBAL NUCLEAR IGNORES ---
+# Stop EVERYTHING in these folders everywhere
+**/venv/
+venv/
+.venv/
+env/
+**/node_modules/
+**/dist/
+**/build/
+.next/
+out/
+
+# Python / Compiled caches
+**/__pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
-*.so
+# LARGE ARCHIVES
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.iso
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*,cover
-
-# Pyenv
-.python-version
-
-# virtualenv
-.venv/
-venv/
-ENV/
-env/
-
-# Jupyter Notebook checkpoints
-.ipynb_checkpoints
-
-# VSCode
-.vscode/
-
-# Data
-data_windows/
+# Data & Models (Strict)
+data/
+**/data/**
+models/
+**/models/**
+*.csv
 *.parquet
+*.h5
+*.txt
+*.pth
+*.joblib
+*.pkl
+*.onnx
 
-# auth
-auth.txt
-auth_full.parquet
-auth_subset.parquet
-auth_time_window.parquet
+# IDE & Logs
+.vscode/
+.idea/
+.ipynb_checkpoints/
+.DS_Store
+reports/
+logs/
+*.log
 
-auth_full.csv
-filtered_auth.parquet
-labeled_auth.parquet
-auth_time_window/
+# --- PROJECT ROOTS (Explicit Override) ---
+# Allow your actual project code
+!src/
+!dashboard/
+!README.md
+!.gitignore
+
+# Explicitly re-ignore dashboard internal noise
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.env*
