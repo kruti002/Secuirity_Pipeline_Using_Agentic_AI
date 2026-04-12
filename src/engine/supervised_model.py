@@ -25,7 +25,9 @@ from features import add_base_features, drop_unneeded_columns_for_ml
 # Pipeline will only use columns that actually exist in the DataFrame.
 # ---------------------------------------------------------------------------
 CANDIDATE_CATEGORICAL = [
-    'Country', 'OS Name and Version', 'Browser Name and Version', 'Device Type'
+    # Only low-cardinality categoricals survive at 4M+ scale.
+    # Country, OS, Browser are already captured numerically via First_Time_* and GF_ features.
+    'Device Type',
 ]
 
 CANDIDATE_NUMERICAL = [
@@ -153,11 +155,53 @@ def train_supervised_model(
     X_val   = df_val.drop(columns=[target_col])
     y_val   = df_val[target_col].astype(int)
 
+    # --- Hybrid Train Sampling (Train only - val/test untouched) ---
+    # Problem: 32 ATOs in 4.2M rows = 1:131k ratio → model underconfident
+    # Fix: Keep all positives + intelligent negatives mix
+    RANDOM_NEGATIVES  = 150_000   # broad normal coverage
+    HARD_NEGATIVES    = 25_000    # attack-like normals (hard cases)
+
+    pos_mask = y_train == 1
+    neg_mask = y_train == 0
+
+    X_pos = X_train[pos_mask]
+    y_pos = y_train[pos_mask]
+    X_neg = X_train[neg_mask]
+    y_neg = y_train[neg_mask]
+
+    # Hard negatives: normals with highest GF drift/pressure
+    hard_col = next((c for c in ['GF_User_Drift_Score', 'GF_ASN_User_Count_Before',
+                                  'GF_New_Entity_Count'] if c in X_neg.columns), None)
+    if hard_col and len(X_neg) > HARD_NEGATIVES:
+        hard_idx = X_neg[hard_col].nlargest(HARD_NEGATIVES).index
+        X_hard   = X_neg.loc[hard_idx]
+        y_hard   = y_neg.loc[hard_idx]
+        X_neg_remaining = X_neg.drop(index=hard_idx)
+        y_neg_remaining = y_neg.drop(index=hard_idx)
+    else:
+        X_hard = X_neg.iloc[:0]  # empty
+        y_hard = y_neg.iloc[:0]
+        X_neg_remaining = X_neg
+        y_neg_remaining = y_neg
+
+    # Random negatives from remaining pool
+    rand_n = min(RANDOM_NEGATIVES, len(X_neg_remaining))
+    rand_idx = X_neg_remaining.sample(n=rand_n, random_state=42).index
+    X_rand = X_neg_remaining.loc[rand_idx]
+    y_rand = y_neg_remaining.loc[rand_idx]
+
+    X_train = pd.concat([X_pos, X_hard, X_rand]).reset_index(drop=True)
+    y_train = pd.concat([y_pos, y_hard, y_rand]).reset_index(drop=True)
+
+    print(f"\nHybrid sampled train: {len(X_pos)} positives + "
+          f"{len(X_hard)} hard negatives + {len(X_rand)} random negatives "
+          f"= {len(X_train)} total rows")
+
     # --- Class distribution check ---
-    print("\nTrain label distribution:")
+    print("\nTrain label distribution (sampled):")
     print(y_train.value_counts(normalize=True).round(4))
-    print("\nValidation label distribution:")
-    print(y_val.value_counts(normalize=True).round(4))
+    print("\nValidation label distribution (unsampled):")
+    print(y_val.value_counts(normalize=True).round(6))
 
     # --- Dynamic feature selection (robust to missing/added columns) ---
     categorical_cols = [c for c in CANDIDATE_CATEGORICAL if c in X_train.columns]
@@ -191,12 +235,12 @@ def train_supervised_model(
         remainder='drop'
     )
 
-    # --- Model ---
+    # --- Model: Stronger class weight to amplify ATO signal ---
     classifier = RandomForestClassifier(
         n_estimators=400,
         max_depth=16,
-        min_samples_leaf=5,
-        class_weight='balanced_subsample',
+        min_samples_leaf=2,
+        class_weight={0: 1, 1: 200},
         random_state=42,
         n_jobs=-1
     )
@@ -214,7 +258,7 @@ def train_supervised_model(
 
     # Tune threshold on validation for best high-recall point
     threshold = find_best_threshold(y_val, y_prob, target_recall=0.70)
-    print(f"\nAuto-tuned threshold (≥70% recall target): {threshold:.4f}")
+    print(f"\nAuto-tuned threshold (>=70% recall target): {threshold:.4f}")
 
     y_pred = (y_prob >= threshold).astype(int)
 
