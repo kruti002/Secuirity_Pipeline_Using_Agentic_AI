@@ -1,4 +1,6 @@
 # --- GLOBAL NUCLEAR IGNORES ---
+.env
+.env.*
 # Stop EVERYTHING in these folders everywhere
 **/venv/
 venv/
