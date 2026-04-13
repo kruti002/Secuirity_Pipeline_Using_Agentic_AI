@@ -9,12 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@googlemaps/js-api-loader": "^2.0.2",
     "axios": "^1.15.0",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.300.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-is": "^19.2.5",
+    "react-leaflet": "^4.2.1",
     "recharts": "^3.8.1",
     "tailwind-merge": "^3.5.0"
   },
